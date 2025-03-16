@@ -1,11 +1,12 @@
 import os
 import json
+import secrets
+import string
 from cryptography.fernet import Fernet
 import PySimpleGUI as sg
 
 # ---------- Step 1: Setup and Initialization ----------
 
-# Function to load or generate a secret key
 def load_key(filename="secret.key"):
     """
     Checks if the key file exists; if not, generates a new key and saves it.
@@ -32,9 +33,18 @@ def decrypt_password(token: bytes) -> str:
     """Decrypt an encrypted password token."""
     return cipher_suite.decrypt(token).decode()
 
+# ---------- New Feature: Password Generation ----------
+
+def generate_password(length=12):
+    """
+    Generate a strong random password using letters, digits, and punctuation.
+    The default length is 12 characters.
+    """
+    characters = string.ascii_letters + string.digits + string.punctuation
+    return ''.join(secrets.choice(characters) for _ in range(length))
+
 # ---------- Step 2: Data Storage Setup ----------
 
-# Data file name and in-memory list for storing multiple entries.
 DATA_FILENAME = "passwords.json"
 password_data = []  # List to hold entries
 
@@ -45,7 +55,7 @@ def load_data():
         with open(DATA_FILENAME, "r") as f:
             try:
                 password_data = json.load(f)
-            except Exception as e:
+            except Exception:
                 password_data = []
     else:
         password_data = []
@@ -60,11 +70,12 @@ load_data()
 
 # ---------- Step 3: GUI Layout ----------
 
-# The GUI now has fields for Website, Username, and Password
 layout = [
-    [sg.Text("Website/Service:"), sg.InputText(key="WEBSITE", size=(30,1))],
-    [sg.Text("Username:"),      sg.InputText(key="USERNAME", size=(30,1))],
-    [sg.Text("Password:"),      sg.InputText(key="PASSWORD", size=(30,1), password_char="*")],
+    [sg.Text("Website/Service:"), sg.InputText(key="WEBSITE", size=(30, 1))],
+    [sg.Text("Username:"),      sg.InputText(key="USERNAME", size=(30, 1))],
+    [sg.Text("Password:"), 
+     sg.InputText(key="PASSWORD", size=(30, 1), password_char="*"),
+     sg.Button("Generate")],
     [sg.Button("Add Entry"), sg.Button("Update Entry"), sg.Button("Delete Entry")],
     [sg.Button("Decrypt"), sg.Button("Exit")],
     [sg.Table(values=[], headings=["Website", "Username", "Password"],
@@ -75,43 +86,44 @@ layout = [
 
 window = sg.Window("Password Manager", layout, finalize=True)
 
-# Function to update the table view whenever data changes
 def update_table(window):
+    """Refresh the table with current password entries (passwords are masked)."""
     table_data = [
-        [entry["website"], entry["username"], "********"] 
+        [entry["website"], entry["username"], "********"]
         for entry in password_data
     ]
     window["TABLE"].update(values=table_data)
 
 update_table(window)
 
-# Variable to keep track of the selected entry in the table.
 selected_index = None
 
-# ---------- Step 4: GUI Event Loop and Click-by-Click Walkthrough ----------
-
+# ---------- Step 4: GUI Event Loop ----------
 while True:
     event, values = window.read()
 
-    # "Exit" or window closed: end the application.
     if event == sg.WINDOW_CLOSED or event == "Exit":
         break
 
-    # ----- Click 1: Add Entry -----
-    if event == "Add Entry":
+    # ----- Click: "Generate" Button -----
+    if event == "Generate":
+        # Generate a strong random password and fill the password field.
+        new_password = generate_password()
+        window["PASSWORD"].update(new_password)
+        sg.popup("Generated Password:", new_password)
+
+    # ----- Click: "Add Entry" Button -----
+    elif event == "Add Entry":
         website = values["WEBSITE"]
         username = values["USERNAME"]
         password = values["PASSWORD"]
         if website and username and password:
-            # Encrypt the password for secure storage.
             encrypted = encrypt_password(password)
-            # Create a new entry dictionary.
             entry = {
                 "website": website,
                 "username": username,
-                "password": encrypted.decode()  # store as a string
+                "password": encrypted.decode()  # stored as a string
             }
-            # Append to our in-memory list and persist to disk.
             password_data.append(entry)
             save_data()
             update_table(window)
@@ -119,18 +131,16 @@ while True:
         else:
             sg.popup("Please fill in all fields.")
 
-    # ----- Click 2: Table Selection -----
+    # ----- Click: Selecting a Row in the Table -----
     elif event == "TABLE":
-        # When an entry is clicked in the table, record its index.
         if values["TABLE"]:
             selected_index = values["TABLE"][0]
             selected_entry = password_data[selected_index]
-            # Populate the text fields with the selected data (except the decrypted password)
             window["WEBSITE"].update(selected_entry["website"])
             window["USERNAME"].update(selected_entry["username"])
-            window["PASSWORD"].update("")  # For security, don't auto-display the password
+            window["PASSWORD"].update("")  # keep password field blank for security
 
-    # ----- Click 3: Update Entry -----
+    # ----- Click: "Update Entry" Button -----
     elif event == "Update Entry":
         if selected_index is None:
             sg.popup("Please select an entry from the table first.")
@@ -140,7 +150,6 @@ while True:
             password = values["PASSWORD"]
             if website and username and password:
                 encrypted = encrypt_password(password)
-                # Update the selected entry with new data.
                 password_data[selected_index] = {
                     "website": website,
                     "username": username,
@@ -152,7 +161,7 @@ while True:
             else:
                 sg.popup("Please fill in all fields.")
 
-    # ----- Click 4: Delete Entry -----
+    # ----- Click: "Delete Entry" Button -----
     elif event == "Delete Entry":
         if selected_index is None:
             sg.popup("Please select an entry from the table first.")
@@ -163,19 +172,18 @@ while True:
                 save_data()
                 update_table(window)
                 sg.popup("Entry deleted.")
-                selected_index = None  # reset selection
+                selected_index = None
 
-    # ----- Click 5: Decrypt -----
+    # ----- Click: "Decrypt" Button -----
     elif event == "Decrypt":
         if selected_index is None:
             sg.popup("Please select an entry from the table first.")
         else:
             try:
-                # Retrieve encrypted password from the selected entry.
                 encrypted_str = password_data[selected_index]["password"]
                 decrypted = decrypt_password(encrypted_str.encode())
                 sg.popup("Decrypted Password:", decrypted)
-            except Exception as e:
+            except Exception:
                 sg.popup("Error during decryption.")
 
 window.close()
