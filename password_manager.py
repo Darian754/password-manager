@@ -1,15 +1,112 @@
 import os
 import json
+import hashlib
 import secrets
 import string
 from cryptography.fernet import Fernet
 import PySimpleGUI as sg
 
-# ---------- Step 1: Setup and Initialization ----------
+
+#                Master Password Functionality               
+
+
+# This function uses PBKDF2 (with 100,000 iterations) to hash the master password.
+def hash_master_password(password: str, salt: bytes) -> str:
+    hashed = hashlib.pbkdf2_hmac('sha256', password.encode(), salt, 100000)
+    return hashed.hex()
+
+# This function is called when no master password exists.
+# It opens a setup window for the user to set and confirm a master password.
+def set_master_password():
+    layout = [
+        [sg.Text("Set a Master Password:")],
+        [sg.InputText(key="MASTER1", password_char="*")],
+        [sg.Text("Confirm Master Password:")],
+        [sg.InputText(key="MASTER2", password_char="*")],
+        [sg.Button("Submit")]
+    ]
+    window = sg.Window("Set Master Password", layout)
+    while True:
+        event, values = window.read()
+        if event in (sg.WINDOW_CLOSED, "Exit"):
+            window.close()
+            exit()  # Exit if the user closes the window.
+        if event == "Submit":
+            pwd1 = values["MASTER1"]
+            pwd2 = values["MASTER2"]
+            if not pwd1 or not pwd2:
+                sg.popup("Please fill in both fields.")
+            elif pwd1 != pwd2:
+                sg.popup("Passwords do not match, try again.")
+            else:
+                # Generate a random salt and compute the hash.
+                salt = os.urandom(16)
+                master_hash = hash_master_password(pwd1, salt)
+                # Save the salt (in hex) and hash in a JSON file.
+                master_data = {"salt": salt.hex(), "hash": master_hash}
+                with open("master.json", "w") as f:
+                    json.dump(master_data, f)
+                sg.popup("Master password set successfully!")
+                window.close()
+                break
+
+# This function verifies the entered master password.
+def verify_master_password(max_attempts=3):
+    try:
+        with open("master.json", "r") as f:
+            master_data = json.load(f)
+        salt = bytes.fromhex(master_data["salt"])
+        expected_hash = master_data["hash"]
+    except Exception as e:
+        sg.popup("Error reading master password file. Exiting.")
+        exit()
+        
+    attempts = 0
+    layout = [
+        [sg.Text("Enter Master Password:"), sg.InputText(key="MASTER", password_char="*")],
+        [sg.Button("Login")]
+    ]
+    window = sg.Window("Login", layout)
+    verified = False
+    while attempts < max_attempts:
+        event, values = window.read()
+        if event in (sg.WINDOW_CLOSED, "Exit"):
+            window.close()
+            exit()
+        if event == "Login":
+            entered = values["MASTER"]
+            if not entered:
+                sg.popup("Please enter a master password.")
+            else:
+                user_hash = hash_master_password(entered, salt)
+                if user_hash == expected_hash:
+                    verified = True
+                    sg.popup("Login Successful!")
+                    break
+                else:
+                    attempts += 1
+                    sg.popup(f"Incorrect password. Attempts left: {max_attempts - attempts}")
+    window.close()
+    if not verified:
+        sg.popup("Maximum attempts exceeded. Exiting.")
+        exit()
+
+# If the master password file doesn't exist, run the setup.
+if not os.path.exists("master.json"):
+    set_master_password()
+
+# Prompt for the master password on each launch.
+verify_master_password()
+
+
+#                Password Manager Core Code                  
+
+
+# ---------- Step 1: Load/Generate Encryption Key ----------
 
 def load_key(filename="secret.key"):
     """
-    Checks if the key file exists; if not, generates a new key and saves it.
+    If a secret key exists, loads it; otherwise, generates a new key.
     """
     if os.path.exists(filename):
         with open(filename, "rb") as key_file:
@@ -20,36 +117,37 @@ def load_key(filename="secret.key"):
             key_file.write(key)
     return key
 
-# Load the key and create a Fernet cipher suite
 key = load_key()
 cipher_suite = Fernet(key)
 
-# Encryption and decryption functions
 def encrypt_password(password: str) -> bytes:
-    """Encrypt a plaintext password."""
+    """Encrypts the plaintext password."""
     return cipher_suite.encrypt(password.encode())
 
 def decrypt_password(token: bytes) -> str:
-    """Decrypt an encrypted password token."""
+    """Decrypts the encrypted password token."""
     return cipher_suite.decrypt(token).decode()
 
-# ---------- New Feature: Password Generation ----------
+
+#              Additional Feature: Password Generation       
+
 
 def generate_password(length=12):
     """
-    Generate a strong random password using letters, digits, and punctuation.
-    The default length is 12 characters.
+    Generates a strong random password using letters, digits, and punctuation.
     """
     characters = string.ascii_letters + string.digits + string.punctuation
     return ''.join(secrets.choice(characters) for _ in range(length))
 
-# ---------- Step 2: Data Storage Setup ----------
+
+#                    Data Storage Functions                  
+
 
 DATA_FILENAME = "passwords.json"
-password_data = []  # List to hold entries
+password_data = []  # In-memory list to store entries
 
 def load_data():
-    """Load saved password entries from a JSON file."""
+    """Loads saved password entries from a JSON file into memory."""
     global password_data
     if os.path.exists(DATA_FILENAME):
         with open(DATA_FILENAME, "r") as f:
@@ -61,33 +159,35 @@ def load_data():
         password_data = []
 
 def save_data():
-    """Save the current password entries to a JSON file."""
+    """Persists the current password entries in a JSON file."""
     with open(DATA_FILENAME, "w") as f:
         json.dump(password_data, f)
 
-# Load any existing data at startup
 load_data()
 
-# ---------- Step 3: GUI Layout ----------
+
+#                         GUI Layout                         
+
 
 layout = [
     [sg.Text("Website/Service:"), sg.InputText(key="WEBSITE", size=(30, 1))],
-    [sg.Text("Username:"),      sg.InputText(key="USERNAME", size=(30, 1))],
+    [sg.Text("Username:"), sg.InputText(key="USERNAME", size=(30, 1))],
     [sg.Text("Password:"), 
      sg.InputText(key="PASSWORD", size=(30, 1), password_char="*"),
      sg.Button("Generate")],
     [sg.Button("Add Entry"), sg.Button("Update Entry"), sg.Button("Delete Entry")],
     [sg.Button("Decrypt"), sg.Button("Exit")],
     [sg.Table(values=[], headings=["Website", "Username", "Password"],
-              key="TABLE", enable_events=True, 
-              select_mode=sg.TABLE_SELECT_MODE_BROWSE, 
+              key="TABLE", enable_events=True, select_mode=sg.TABLE_SELECT_MODE_BROWSE,
               auto_size_columns=True, num_rows=10)]
 ]
 
 window = sg.Window("Password Manager", layout, finalize=True)
 
 def update_table(window):
-    """Refresh the table with current password entries (passwords are masked)."""
+    """
+    Refreshes the table view with stored entries while masking the password.
+    """
     table_data = [
         [entry["website"], entry["username"], "********"]
         for entry in password_data
@@ -98,21 +198,23 @@ update_table(window)
 
 selected_index = None
 
-# ---------- Step 4: GUI Event Loop ----------
+
+#                      GUI Event Loop                        
+
+
 while True:
     event, values = window.read()
-
-    if event == sg.WINDOW_CLOSED or event == "Exit":
+    
+    if event in (sg.WINDOW_CLOSED, "Exit"):
         break
 
-    # ----- Click: "Generate" Button -----
+    # ----- Generate a Random Password -----
     if event == "Generate":
-        # Generate a strong random password and fill the password field.
         new_password = generate_password()
         window["PASSWORD"].update(new_password)
         sg.popup("Generated Password:", new_password)
 
-    # ----- Click: "Add Entry" Button -----
+    # ----- Add Entry -----
     elif event == "Add Entry":
         website = values["WEBSITE"]
         username = values["USERNAME"]
@@ -122,7 +224,7 @@ while True:
             entry = {
                 "website": website,
                 "username": username,
-                "password": encrypted.decode()  # stored as a string
+                "password": encrypted.decode()  # Store encrypted password as string.
             }
             password_data.append(entry)
             save_data()
@@ -131,16 +233,16 @@ while True:
         else:
             sg.popup("Please fill in all fields.")
 
-    # ----- Click: Selecting a Row in the Table -----
+    # ----- Table Selection: Populate Fields (except Password) -----
     elif event == "TABLE":
         if values["TABLE"]:
             selected_index = values["TABLE"][0]
             selected_entry = password_data[selected_index]
             window["WEBSITE"].update(selected_entry["website"])
             window["USERNAME"].update(selected_entry["username"])
-            window["PASSWORD"].update("")  # keep password field blank for security
+            window["PASSWORD"].update("")  # Leave password blank for security.
 
-    # ----- Click: "Update Entry" Button -----
+    # ----- Update Entry -----
     elif event == "Update Entry":
         if selected_index is None:
             sg.popup("Please select an entry from the table first.")
@@ -161,7 +263,7 @@ while True:
             else:
                 sg.popup("Please fill in all fields.")
 
-    # ----- Click: "Delete Entry" Button -----
+    # ----- Delete Entry -----
     elif event == "Delete Entry":
         if selected_index is None:
             sg.popup("Please select an entry from the table first.")
@@ -174,7 +276,7 @@ while True:
                 sg.popup("Entry deleted.")
                 selected_index = None
 
-    # ----- Click: "Decrypt" Button -----
+    # ----- Decrypt Password -----
     elif event == "Decrypt":
         if selected_index is None:
             sg.popup("Please select an entry from the table first.")
